@@ -29,14 +29,19 @@ services:
       PORT: "3000"
       HLS_DIR: /var/www/radio/hls
       ARCHIVE_DIR: /var/www/radio/archive
+      HIDDEN_ARCHIVE_DIR: /var/www/radio/hidden_archive
       STALE_MS: "${STALE_MS:-30000}"
       HLS_STREAM_URL: "${HLS_STREAM_URL:-/hls/stream.m3u8}"
       ARCHIVE_URL_PREFIX: "${ARCHIVE_URL_PREFIX:-/archive}"
+      ARCHIVE_AGE_DAYS: "${ARCHIVE_AGE_DAYS:-0}"
+      HIDDEN_ARCHIVE_DELETE_DAYS: "${HIDDEN_ARCHIVE_DELETE_DAYS:-0}"
     volumes:
       - radio-hls:/var/www/radio/hls:ro
-      - radio-archive:/var/www/radio/archive:ro
+      - radio-archive:/var/www/radio/archive
+      - radio-hidden-archive:/var/www/radio/hidden_archive
 
 volumes:
   radio-hls:
   radio-archive:
+  radio-hidden-archive:
   radio-logs:
