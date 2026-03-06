@@ -15,6 +15,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const fs = require('fs');
 const path = require('path');
 
@@ -36,6 +37,19 @@ app.use((_req, res, next) => {
 });
 
 app.options('*', (_req, res) => res.sendStatus(204));
+
+// ---------------------------------------------------------------------------
+// Rate limiting — prevent excessive filesystem access from any single client
+// ---------------------------------------------------------------------------
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,             // 60 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+app.use('/api/', apiLimiter);
 
 // ---------------------------------------------------------------------------
 // GET /api/status
