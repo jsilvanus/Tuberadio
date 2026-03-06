@@ -8,10 +8,12 @@
  *   GET /api/archive  — list of archived MP3 recordings (newest first)
  *
  * Environment variables:
- *   PORT            Port to listen on                   (default: 3000)
- *   HLS_DIR         Directory containing stream.m3u8    (default: /var/www/radio/hls)
- *   ARCHIVE_DIR     Directory containing archived MP3s  (default: /var/www/radio/archive)
- *   STALE_MS        ms after which a manifest is stale  (default: 30000)
+ *   PORT              Port to listen on                   (default: 3000)
+ *   HLS_DIR           Directory containing stream.m3u8    (default: /var/www/radio/hls)
+ *   ARCHIVE_DIR       Directory containing archived MP3s  (default: /var/www/radio/archive)
+ *   STALE_MS          ms after which a manifest is stale  (default: 30000)
+ *   HLS_STREAM_URL    Public URL returned in /api/status  (default: /hls/stream.m3u8)
+ *   ARCHIVE_URL_PREFIX  URL prefix for archive MP3 links  (default: /archive)
  */
 
 const express = require('express');
@@ -25,6 +27,10 @@ const HLS_DIR = process.env.HLS_DIR || '/var/www/radio/hls';
 const ARCHIVE_DIR = process.env.ARCHIVE_DIR || '/var/www/radio/archive';
 /** If the HLS manifest hasn't been updated in this many ms, the stream is stale */
 const STALE_MS = Number(process.env.STALE_MS) || 30_000;
+/** Public URL for the HLS stream — returned in the /api/status payload */
+const HLS_STREAM_URL = process.env.HLS_STREAM_URL || '/hls/stream.m3u8';
+/** URL prefix used to build archive download links returned by /api/archive */
+const ARCHIVE_URL_PREFIX = (process.env.ARCHIVE_URL_PREFIX || '/archive').replace(/\/$/, '');
 
 // ---------------------------------------------------------------------------
 // CORS — all responses allow any origin so the embeddable widget works across
@@ -71,7 +77,7 @@ app.get('/api/status', (_req, res) => {
 
   res.json({
     live,
-    streamUrl: '/hls/stream.m3u8',
+    streamUrl: HLS_STREAM_URL,
     lastUpdated,
   });
 });
@@ -109,7 +115,7 @@ app.get('/api/archive', (_req, res) => {
 
         return {
           filename,
-          url: `/archive/${filename}`,
+          url: `${ARCHIVE_URL_PREFIX}/${filename}`,
           startedAt,
           streamName,
           sizeBytes,
@@ -127,6 +133,8 @@ app.get('/api/archive', (_req, res) => {
 // ---------------------------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`Tuberadio API server listening on port ${PORT}`);
-  console.log(`  HLS_DIR     : ${HLS_DIR}`);
-  console.log(`  ARCHIVE_DIR : ${ARCHIVE_DIR}`);
+  console.log(`  HLS_DIR           : ${HLS_DIR}`);
+  console.log(`  ARCHIVE_DIR       : ${ARCHIVE_DIR}`);
+  console.log(`  HLS_STREAM_URL    : ${HLS_STREAM_URL}`);
+  console.log(`  ARCHIVE_URL_PREFIX: ${ARCHIVE_URL_PREFIX}`);
 });
