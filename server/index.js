@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * Tuberadio — Status & Archive API server
  *
@@ -31,11 +29,14 @@
  *   MAILGUN_DOMAIN           Mailgun domain   (EMAIL_PROVIDER=mailgun)
  */
 
-const express = require('express');
-const rateLimit = require('express-rate-limit');
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
+import express from 'express';
+import rateLimit from 'express-rate-limit';
+import fs from 'fs';
+import path from 'path';
+import https from 'https';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
