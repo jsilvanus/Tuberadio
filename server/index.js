@@ -1,11 +1,12 @@
-'use strict';
-
 /**
  * Tuberadio — Status & Archive API server
  *
  * Endpoints:
- *   GET /api/status   — whether the HLS stream is currently live
- *   GET /api/archive  — list of archived MP3 recordings (newest first)
+ *   GET  /api/status         — whether the HLS stream is currently live
+ *   GET  /api/archive        — list of archived MP3 recordings (newest first)
+ *   GET  /api/stats          — aggregate anonymous play/session statistics
+ *   POST /api/stats/event    — record a play event from the widget
+ *   POST /api/stats/session  — record a stream session lifecycle event (internal)
  *
  * Environment variables:
  *   PORT                     Port to listen on                          (default: 3000)
@@ -17,12 +18,25 @@
  *   ARCHIVE_URL_PREFIX       URL prefix for archive MP3 links           (default: /archive)
  *   ARCHIVE_AGE_DAYS         Move recordings to hidden archive after N days (0 = disabled, default: 0)
  *   HIDDEN_ARCHIVE_DELETE_DAYS  Delete from hidden archive after N days (0 = disabled, default: 0)
+ *   STATS_FILE               Path to the JSON stats file                (default: /var/www/radio/stats/stats.json)
+ *   STATS_SESSION_DAYS       Days of session history to retain          (default: 90)
+ *   STATS_SESSION_SECRET     Bearer token for /api/stats/session        (default: unset)
+ *   EMAIL_PROVIDER           Email provider: sendgrid | mailgun         (default: unset / disabled)
+ *   EMAIL_TO                 Recipient address for monthly report
+ *   EMAIL_FROM               Sender address for monthly report
+ *   SENDGRID_API_KEY         SendGrid API key (EMAIL_PROVIDER=sendgrid)
+ *   MAILGUN_API_KEY          Mailgun API key  (EMAIL_PROVIDER=mailgun)
+ *   MAILGUN_DOMAIN           Mailgun domain   (EMAIL_PROVIDER=mailgun)
  */
 
-const express = require('express');
-const rateLimit = require('express-rate-limit');
-const fs = require('fs');
-const path = require('path');
+import express from 'express';
+import rateLimit from 'express-rate-limit';
+import fs from 'fs';
+import path from 'path';
+import https from 'https';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -40,13 +54,29 @@ const ARCHIVE_AGE_DAYS = Number(process.env.ARCHIVE_AGE_DAYS) || 0;
 /** Delete MP3s from HIDDEN_ARCHIVE_DIR after this many days; 0 = disabled */
 const HIDDEN_ARCHIVE_DELETE_DAYS = Number(process.env.HIDDEN_ARCHIVE_DELETE_DAYS) || 0;
 
+/** Absolute path to the JSON file that stores anonymous aggregate stats */
+const STATS_FILE = process.env.STATS_FILE || '/var/www/radio/stats/stats.json';
+/** Maximum age (days) for stream-session history kept in stats.json */
+const STATS_SESSION_DAYS = Number(process.env.STATS_SESSION_DAYS) || 90;
+/** Optional bearer token for the internal /api/stats/session endpoint */
+const STATS_SESSION_SECRET = process.env.STATS_SESSION_SECRET || '';
+
+/** Email provider: 'sendgrid' | 'mailgun' | '' (disabled) */
+const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || '').toLowerCase();
+const EMAIL_TO = process.env.EMAIL_TO || '';
+const EMAIL_FROM = process.env.EMAIL_FROM || '';
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || '';
+const MAILGUN_API_KEY = process.env.MAILGUN_API_KEY || '';
+const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || '';
+
 // ---------------------------------------------------------------------------
 // CORS — all responses allow any origin so the embeddable widget works across
 // different domains
 // ---------------------------------------------------------------------------
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   next();
 });
 
@@ -64,6 +94,294 @@ const apiLimiter = rateLimit({
 });
 
 app.use('/api/', apiLimiter);
+app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Stats helpers
+// ---------------------------------------------------------------------------
+
+// In-memory stats cache — loaded once at startup, written through on every mutation.
+let _statsCache = null;
+let _writePending = false;
+
+function _emptyStats() {
+  return { livePlayCount: 0, archivePlays: {}, streamSessions: [] };
+}
+
+function _loadStats() {
+  try {
+    const raw = fs.readFileSync(STATS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    _statsCache = {
+      livePlayCount: Number(parsed.livePlayCount) || 0,
+      archivePlays: (parsed.archivePlays && typeof parsed.archivePlays === 'object')
+        ? parsed.archivePlays : {},
+      streamSessions: Array.isArray(parsed.streamSessions) ? parsed.streamSessions : [],
+    };
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error(`[stats] Could not parse ${STATS_FILE}: ${err.message} — starting fresh`);
+    }
+    _statsCache = _emptyStats();
+  }
+}
+
+function _saveStats() {
+  if (_writePending) return;
+  _writePending = true;
+  setImmediate(function _doWrite() {
+    _writePending = false;
+    const tmpPath = STATS_FILE + '.tmp';
+    try {
+      fs.mkdirSync(path.dirname(STATS_FILE), { recursive: true });
+      fs.writeFileSync(tmpPath, JSON.stringify(_statsCache, null, 2), 'utf8');
+      fs.renameSync(tmpPath, STATS_FILE);
+    } catch (err) {
+      console.error(`[stats] Write failed: ${err.message}`);
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
+  });
+}
+
+function _pruneOldSessions() {
+  const cutoff = Date.now() - STATS_SESSION_DAYS * 24 * 60 * 60 * 1000;
+  _statsCache.streamSessions = _statsCache.streamSessions.filter(function (s) {
+    const ts = s.startedAt ? new Date(s.startedAt).getTime() : 0;
+    return ts > cutoff;
+  });
+}
+
+function recordLivePlay() {
+  _statsCache.livePlayCount = (_statsCache.livePlayCount || 0) + 1;
+  _saveStats();
+}
+
+function recordArchivePlay(filename) {
+  if (!_statsCache.archivePlays[filename]) _statsCache.archivePlays[filename] = 0;
+  _statsCache.archivePlays[filename] += 1;
+  _saveStats();
+}
+
+function recordSessionStart(streamName, startedAt) {
+  _pruneOldSessions();
+  _statsCache.streamSessions.push({
+    streamName: streamName || 'unknown',
+    startedAt: startedAt || new Date().toISOString(),
+    endedAt: null,
+    durationSeconds: null,
+  });
+  _saveStats();
+}
+
+function recordSessionEnd(streamName, endedAt) {
+  const endTime = endedAt ? new Date(endedAt) : new Date();
+  let matched = false;
+  for (let i = _statsCache.streamSessions.length - 1; i >= 0; i--) {
+    const s = _statsCache.streamSessions[i];
+    if (s.streamName === streamName && s.endedAt === null) {
+      s.endedAt = endTime.toISOString();
+      s.durationSeconds = Math.round((endTime.getTime() - new Date(s.startedAt).getTime()) / 1000);
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) {
+    _statsCache.streamSessions.push({
+      streamName: streamName || 'unknown',
+      startedAt: null,
+      endedAt: endTime.toISOString(),
+      durationSeconds: null,
+    });
+  }
+  _saveStats();
+}
+
+// ---------------------------------------------------------------------------
+// Monthly email report helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the monthly stats report for a given year/month (1-indexed).
+ * Returns { subject, text, html }.
+ */
+function _buildMonthlyReport(year, month) {
+  const monthName = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long' });
+  const subject = `Tuberadio stats — ${monthName} ${year}`;
+
+  const startOfMonth = new Date(year, month - 1, 1).getTime();
+  const endOfMonth = new Date(year, month, 1).getTime();
+
+  // Sessions in this month
+  const sessions = _statsCache.streamSessions.filter(function (s) {
+    const ts = s.startedAt ? new Date(s.startedAt).getTime() : 0;
+    return ts >= startOfMonth && ts < endOfMonth;
+  });
+
+  const totalSessions = sessions.length;
+  const totalSeconds = sessions.reduce(function (sum, s) { return sum + (s.durationSeconds || 0); }, 0);
+  const totalHours = (totalSeconds / 3600).toFixed(1);
+
+  // Archive plays this month — approximate using filename timestamp embedded in key
+  let archivePlaysThisMonth = 0;
+  const topArchive = [];
+  Object.keys(_statsCache.archivePlays).forEach(function (filename) {
+    // Filename: YYYY-MM-DD_HH-MM-SS_name.mp3
+    const m = filename.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) {
+      const fileYear = Number(m[1]);
+      const fileMonth = Number(m[2]);
+      if (fileYear === year && fileMonth === month) {
+        const count = _statsCache.archivePlays[filename];
+        archivePlaysThisMonth += count;
+        topArchive.push({ filename, count });
+      }
+    }
+  });
+  topArchive.sort(function (a, b) { return b.count - a.count; });
+  const top5 = topArchive.slice(0, 5);
+
+  const liveCount = _statsCache.livePlayCount; // lifetime total (no per-month breakdown stored)
+
+  const text = [
+    `Tuberadio Monthly Report — ${monthName} ${year}`,
+    '='.repeat(45),
+    '',
+    `Live play button clicks (lifetime total): ${liveCount}`,
+    `Broadcast sessions this month: ${totalSessions}`,
+    `Total hours on air this month: ${totalHours} h`,
+    `Archive downloads this month: ${archivePlaysThisMonth}`,
+    '',
+    top5.length ? 'Top archive recordings this month:' : 'No archive downloads this month.',
+    ...top5.map(function (r, i) { return `  ${i + 1}. ${r.filename} — ${r.count} download${r.count !== 1 ? 's' : ''}`; }),
+    '',
+    `Report generated: ${new Date().toISOString()}`,
+  ].join('\n');
+
+  const html = `<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:600px;margin:auto">
+<h2>Tuberadio Monthly Report</h2>
+<h3>${monthName} ${year}</h3>
+<table style="border-collapse:collapse;width:100%">
+  <tr><td style="padding:8px;border-bottom:1px solid #eee">Live play button clicks (lifetime total)</td><td style="padding:8px;border-bottom:1px solid #eee"><strong>${liveCount}</strong></td></tr>
+  <tr><td style="padding:8px;border-bottom:1px solid #eee">Broadcast sessions this month</td><td style="padding:8px;border-bottom:1px solid #eee"><strong>${totalSessions}</strong></td></tr>
+  <tr><td style="padding:8px;border-bottom:1px solid #eee">Total hours on air</td><td style="padding:8px;border-bottom:1px solid #eee"><strong>${totalHours} h</strong></td></tr>
+  <tr><td style="padding:8px">Archive downloads this month</td><td style="padding:8px"><strong>${archivePlaysThisMonth}</strong></td></tr>
+</table>
+${top5.length ? `<h4>Top archive recordings</h4><ol>${top5.map(function (r) { return `<li>${r.filename} — ${r.count} download${r.count !== 1 ? 's' : ''}</li>`; }).join('')}</ol>` : ''}
+<p style="color:#888;font-size:12px">Generated ${new Date().toISOString()}</p>
+</body></html>`;
+
+  return { subject, text, html };
+}
+
+/**
+ * Send an email using the configured provider.
+ * Uses Node's built-in https module — no dependencies.
+ */
+function _sendEmail(subject, text, html) {
+  if (!EMAIL_PROVIDER || !EMAIL_TO || !EMAIL_FROM) {
+    console.log('[email] Provider not configured — skipping monthly report');
+    return;
+  }
+
+  if (EMAIL_PROVIDER === 'sendgrid') {
+    if (!SENDGRID_API_KEY) { console.error('[email] SENDGRID_API_KEY not set'); return; }
+    const body = JSON.stringify({
+      personalizations: [{ to: [{ email: EMAIL_TO }] }],
+      from: { email: EMAIL_FROM },
+      subject,
+      content: [
+        { type: 'text/plain', value: text },
+        { type: 'text/html', value: html },
+      ],
+    });
+    const req = https.request({
+      hostname: 'api.sendgrid.com',
+      path: '/v3/mail/send',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, function (res) {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        console.log(`[email] Monthly report sent via SendGrid (${res.statusCode})`);
+      } else {
+        console.error(`[email] SendGrid error: HTTP ${res.statusCode}`);
+      }
+    });
+    req.on('error', function (e) { console.error(`[email] SendGrid request error: ${e.message}`); });
+    req.write(body);
+    req.end();
+    return;
+  }
+
+  if (EMAIL_PROVIDER === 'mailgun') {
+    if (!MAILGUN_API_KEY || !MAILGUN_DOMAIN) { console.error('[email] MAILGUN_API_KEY or MAILGUN_DOMAIN not set'); return; }
+    // Mailgun expects form-encoded data
+    const params = new URLSearchParams({
+      from: EMAIL_FROM,
+      to: EMAIL_TO,
+      subject,
+      text,
+      html,
+    });
+    const body = params.toString();
+    const auth = Buffer.from(`api:${MAILGUN_API_KEY}`).toString('base64');
+    const req = https.request({
+      hostname: 'api.mailgun.net',
+      path: `/v3/${MAILGUN_DOMAIN}/messages`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, function (res) {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        console.log(`[email] Monthly report sent via Mailgun (${res.statusCode})`);
+      } else {
+        console.error(`[email] Mailgun error: HTTP ${res.statusCode}`);
+      }
+    });
+    req.on('error', function (e) { console.error(`[email] Mailgun request error: ${e.message}`); });
+    req.write(body);
+    req.end();
+    return;
+  }
+
+  console.error(`[email] Unknown EMAIL_PROVIDER: ${EMAIL_PROVIDER}`);
+}
+
+/**
+ * Scheduler — checks once per hour whether the month just rolled over.
+ * Sends the previous month's report on the first check after midnight on the 1st.
+ */
+let _lastReportMonth = null; // 'YYYY-MM' string of the last sent report
+
+function _initEmailScheduler() {
+  if (!EMAIL_PROVIDER || !EMAIL_TO) return;
+
+  function _check() {
+    const now = new Date();
+    if (now.getDate() !== 1) return; // only on the 1st of the month
+
+    // Previous month
+    const reportDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const reportKey = `${reportDate.getFullYear()}-${String(reportDate.getMonth() + 1).padStart(2, '0')}`;
+
+    if (_lastReportMonth === reportKey) return; // already sent this month's report
+    _lastReportMonth = reportKey;
+
+    console.log(`[email] Sending monthly report for ${reportKey}`);
+    const { subject, text, html } = _buildMonthlyReport(reportDate.getFullYear(), reportDate.getMonth() + 1);
+    _sendEmail(subject, text, html);
+  }
+
+  // Check immediately (handles a server restart on the 1st), then every hour
+  _check();
+  setInterval(_check, 60 * 60 * 1000);
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/status
@@ -137,6 +455,71 @@ app.get('/api/archive', (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/stats
+// ---------------------------------------------------------------------------
+app.get('/api/stats', (_req, res) => {
+  res.json({
+    livePlayCount: _statsCache.livePlayCount,
+    archivePlays: _statsCache.archivePlays,
+    recentSessions: _statsCache.streamSessions.slice(-20),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/stats/event
+// Widget-facing. Body: { type: 'live-play' | 'archive-play', filename?: string }
+// ---------------------------------------------------------------------------
+app.post('/api/stats/event', (req, res) => {
+  const { type, filename } = req.body || {};
+
+  if (type === 'live-play') {
+    recordLivePlay();
+    return res.json({ ok: true });
+  }
+
+  if (type === 'archive-play') {
+    if (!filename || typeof filename !== 'string') {
+      return res.status(400).json({ error: 'filename required for archive-play' });
+    }
+    if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      return res.status(400).json({ error: 'invalid filename' });
+    }
+    recordArchivePlay(filename);
+    return res.json({ ok: true });
+  }
+
+  return res.status(400).json({ error: 'type must be live-play or archive-play' });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/stats/session
+// Internal use (shell scripts). Body: { event: 'start'|'end', streamName, timestamp? }
+// Optionally protected by Authorization: Bearer <STATS_SESSION_SECRET>
+// ---------------------------------------------------------------------------
+app.post('/api/stats/session', (req, res) => {
+  if (STATS_SESSION_SECRET) {
+    const auth = (req.headers['authorization'] || '').replace(/^Bearer\s+/, '');
+    if (auth !== STATS_SESSION_SECRET) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  }
+
+  const { event, streamName, timestamp } = req.body || {};
+
+  if (event === 'start') {
+    recordSessionStart(streamName, timestamp);
+    return res.json({ ok: true });
+  }
+
+  if (event === 'end') {
+    recordSessionEnd(streamName, timestamp);
+    return res.json({ ok: true });
+  }
+
+  return res.status(400).json({ error: 'event must be start or end' });
+});
+
+// ---------------------------------------------------------------------------
 // Archive maintenance — move aged recordings to hidden archive; optionally
 // delete very old files from the hidden archive.
 // Runs once at startup and then every hour.
@@ -203,6 +586,8 @@ function runArchiveMaintenance() {
 // Start
 // ---------------------------------------------------------------------------
 app.listen(PORT, () => {
+  _loadStats();
+
   console.log(`Tuberadio API server listening on port ${PORT}`);
   console.log(`  HLS_DIR                    : ${HLS_DIR}`);
   console.log(`  ARCHIVE_DIR                : ${ARCHIVE_DIR}`);
@@ -211,9 +596,19 @@ app.listen(PORT, () => {
   console.log(`  ARCHIVE_URL_PREFIX         : ${ARCHIVE_URL_PREFIX}`);
   console.log(`  ARCHIVE_AGE_DAYS           : ${ARCHIVE_AGE_DAYS || 'disabled'}`);
   console.log(`  HIDDEN_ARCHIVE_DELETE_DAYS : ${HIDDEN_ARCHIVE_DELETE_DAYS || 'disabled'}`);
+  console.log(`  STATS_FILE                 : ${STATS_FILE}`);
+  console.log(`  STATS_SESSION_DAYS         : ${STATS_SESSION_DAYS}`);
+  console.log(`  STATS_SESSION_SECRET       : ${STATS_SESSION_SECRET ? '(set)' : '(unset)'}`);
+  console.log(`  EMAIL_PROVIDER             : ${EMAIL_PROVIDER || 'disabled'}`);
+  if (EMAIL_PROVIDER) {
+    console.log(`  EMAIL_TO                   : ${EMAIL_TO || '(unset)'}`);
+    console.log(`  EMAIL_FROM                 : ${EMAIL_FROM || '(unset)'}`);
+  }
 
   if (ARCHIVE_AGE_DAYS > 0 || HIDDEN_ARCHIVE_DELETE_DAYS > 0) {
     runArchiveMaintenance();
     setInterval(runArchiveMaintenance, 60 * 60 * 1000); // run every hour
   }
+
+  _initEmailScheduler();
 });

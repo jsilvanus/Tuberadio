@@ -36,6 +36,7 @@
     streamUrl:  '/hls/stream.m3u8',
     statusUrl:  '/api/status',
     archiveUrl: '/api/archive',
+    statsUrl:   '/api/stats/event',
     title:      'Tuberadio',
     /** How often to poll the status endpoint (ms) */
     pollInterval: 10000,
@@ -53,17 +54,17 @@
     '.tr *{box-sizing:border-box;margin:0;padding:0;}',
 
     '.tr-header{display:flex;align-items:center;gap:12px;margin-bottom:18px;}',
-    '.tr-dot{width:10px;height:10px;border-radius:50%;background:#555;flex-shrink:0;',
-    'transition:background .4s;}',
-    '.tr-dot.live{background:#e94560;',
-    'box-shadow:0 0 0 4px rgba(233,69,96,.25);',
+    '.tr-dot{width:12px;height:12px;border-radius:50%;background:#e94560;flex-shrink:0;',
+    'box-shadow:0 0 0 3px rgba(233,69,96,.25);transition:background .4s,box-shadow .4s;}',
+    '.tr-dot.live{background:#22c55e;',
+    'box-shadow:0 0 0 4px rgba(34,197,94,.25);',
     'animation:tr-pulse 1.8s ease-in-out infinite;}',
-    '@keyframes tr-pulse{0%,100%{box-shadow:0 0 0 4px rgba(233,69,96,.25)}',
-    '50%{box-shadow:0 0 0 8px rgba(233,69,96,.05)}}',
+    '@keyframes tr-pulse{0%,100%{box-shadow:0 0 0 4px rgba(34,197,94,.25)}',
+    '50%{box-shadow:0 0 0 8px rgba(34,197,94,.05)}}',
     '.tr-title{font-size:1.1rem;font-weight:700;letter-spacing:.02em;}',
     '.tr-badge{margin-left:auto;font-size:.68rem;font-weight:600;letter-spacing:.06em;',
     'padding:3px 9px;border-radius:20px;background:#333;color:#aaa;text-transform:uppercase;}',
-    '.tr-badge.live{background:rgba(233,69,96,.18);color:#e94560;}',
+    '.tr-badge.live{background:rgba(34,197,94,.18);color:#22c55e;}',
 
     '.tr-controls{display:flex;align-items:center;gap:14px;margin-bottom:16px;}',
     '.tr-btn{background:none;border:none;cursor:pointer;padding:0;',
@@ -104,11 +105,30 @@
     'font-weight:600;flex-shrink:0;}',
     '.tr-archive-dl:hover{text-decoration:underline;}',
     '.tr-archive-empty{color:#555;font-size:.82rem;padding:6px 4px;}',
+
+    '.tr-info{position:relative;display:flex;align-items:center;margin-left:8px;flex-shrink:0;}',
+    '.tr-info-btn{background:none;border:none;padding:0;cursor:pointer;',
+    'color:#555;display:flex;align-items:center;transition:color .2s;}',
+    '.tr-info-btn:hover{color:#aaa;}',
+    '.tr-tooltip{position:absolute;top:calc(100% + 8px);right:0;width:230px;',
+    'background:#2a2a3e;color:#ccc;font-size:.74rem;line-height:1.5;',
+    'padding:10px 12px;border-radius:8px;border:1px solid #3a3a54;',
+    'box-shadow:0 4px 16px rgba(0,0,0,.4);',
+    'opacity:0;pointer-events:none;transition:opacity .15s;z-index:10;}',
+    '.tr-tooltip::before{content:"";position:absolute;bottom:100%;right:8px;',
+    'border:5px solid transparent;border-bottom-color:#3a3a54;}',
+    '.tr-info:hover .tr-tooltip,.tr-info-btn:focus+.tr-tooltip{opacity:1;pointer-events:auto;}',
   ].join('');
 
   // ---------------------------------------------------------------------------
   // SVG icons (inline, no external assets)
   // ---------------------------------------------------------------------------
+  function iconInfo() {
+    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">' +
+      '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z' +
+      'M13 17h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>';
+  }
+
   function iconPlay() {
     return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">' +
       '<path d="M8 5v14l11-7z"/></svg>';
@@ -216,11 +236,29 @@
 
     this._badge = document.createElement('div');
     this._badge.className = 'tr-badge';
-    this._badge.textContent = 'off air';
+    this._badge.textContent = 'poissa';
+
+    var infoWrap = document.createElement('div');
+    infoWrap.className = 'tr-info';
+
+    var infoBtn = document.createElement('button');
+    infoBtn.className = 'tr-info-btn';
+    infoBtn.setAttribute('aria-label', 'Tietoa tietojenkeruusta');
+    infoBtn.innerHTML = iconInfo();
+
+    var tooltip = document.createElement('div');
+    tooltip.className = 'tr-tooltip';
+    tooltip.textContent = 'Keräämme nimettömiä käyttötietoja: kuuntelunapin painallukset, ' +
+      'arkistolatauksien lukumäärä sekä lähetysajankohdat ja -kestot. ' +
+      'Emme tallenna henkilötietoja.';
+
+    infoWrap.appendChild(infoBtn);
+    infoWrap.appendChild(tooltip);
 
     header.appendChild(this._dot);
     header.appendChild(titleEl);
     header.appendChild(this._badge);
+    header.appendChild(infoWrap);
     root.appendChild(header);
 
     // --- Controls row ---
@@ -231,7 +269,7 @@
     this._playBtn = document.createElement('button');
     this._playBtn.className = 'tr-btn tr-play-btn';
     this._playBtn.innerHTML = iconPlay();
-    this._playBtn.setAttribute('aria-label', 'Play');
+    this._playBtn.setAttribute('aria-label', 'Toista');
     this._playBtn.disabled = true;
     this._playBtn.addEventListener('click', function () { self._togglePlay(); });
     controls.appendChild(this._playBtn);
@@ -267,7 +305,7 @@
     // --- Status line ---
     this._statusEl = document.createElement('div');
     this._statusEl.className = 'tr-status';
-    this._statusEl.textContent = 'Checking stream…';
+    this._statusEl.textContent = 'Tarkistetaan lähetystä…';
     root.appendChild(this._statusEl);
 
     // --- Archive section ---
@@ -276,7 +314,7 @@
 
     var archiveTitle = document.createElement('div');
     archiveTitle.className = 'tr-archive-title';
-    archiveTitle.textContent = 'Past transmissions';
+    archiveTitle.textContent = 'Aiemmat lähetykset';
     archiveWrap.appendChild(archiveTitle);
 
     this._archiveList = document.createElement('ul');
@@ -288,7 +326,7 @@
     this._audio = document.createElement('audio');
     this._audio.preload = 'none';
     this._audio.addEventListener('error', function () {
-      self._setStatus('Playback error — retrying…', true);
+      self._setStatus('Toistovirhe — yritetään uudelleen…', true);
       self._playing = false;
       self._updatePlayBtn();
     });
@@ -313,14 +351,14 @@
     fetchJSON(this.opts.statusUrl, function (err, data) {
       if (err || !data) {
         self._setLive(false);
-        self._setStatus('Could not reach status endpoint', true);
+        self._setStatus('Yhteysvirhe', true);
         return;
       }
       self._setLive(data.live);
       if (data.live) {
-        self._setStatus('On air · streaming now');
+        self._setStatus('Lähetyksessä · suorana nyt');
       } else {
-        self._setStatus('Off air · waiting for stream');
+        self._setStatus('Poissa · odotetaan lähetystä');
       }
     });
   };
@@ -340,7 +378,7 @@
     this._live = live;
     this._dot.className = 'tr-dot' + (live ? ' live' : '');
     this._badge.className = 'tr-badge' + (live ? ' live' : '');
-    this._badge.textContent = live ? 'on air' : 'off air';
+    this._badge.textContent = live ? 'lähetyksessä' : 'poissa';
     this._playBtn.disabled = !live;
 
     // If we were playing and the stream went down, stop.
@@ -356,13 +394,26 @@
     if (this._playing) {
       this._stopPlayback();
     } else {
+      this._reportEvent({ type: 'live-play' });
       this._startPlayback();
+    }
+  };
+
+  TubeRadio.prototype._reportEvent = function (payload) {
+    if (!this.opts.statsUrl) return;
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', this.opts.statsUrl);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(JSON.stringify(payload));
+    } catch (e) {
+      // Silently ignore — stats are optional
     }
   };
 
   TubeRadio.prototype._startPlayback = function () {
     var self = this;
-    this._setStatus('Connecting…');
+    this._setStatus('Yhdistetään…');
 
     var audio = this._audio;
     var url = this.opts.streamUrl;
@@ -373,9 +424,9 @@
       audio.play().then(function () {
         self._playing = true;
         self._updatePlayBtn();
-        self._setStatus('Playing · live');
+        self._setStatus('Toistetaan · suorana');
       }).catch(function (e) {
-        self._setStatus('Playback blocked — tap Play', true);
+        self._setStatus('Toisto estetty — paina Toista', true);
       });
       return;
     }
@@ -390,7 +441,7 @@
     script.src = HLS_JS_CDN;
     script.onload = function () { self._attachHls(url); };
     script.onerror = function () {
-      self._setStatus('Failed to load HLS library', true);
+      self._setStatus('HLS-kirjaston lataus epäonnistui', true);
     };
     document.head.appendChild(script);
   };
@@ -399,7 +450,7 @@
     var self = this;
 
     if (!window.Hls.isSupported()) {
-      this._setStatus('HLS not supported in this browser', true);
+      this._setStatus('Selain ei tue HLS:ää', true);
       return;
     }
 
@@ -413,16 +464,16 @@
       self._audio.play().then(function () {
         self._playing = true;
         self._updatePlayBtn();
-        self._setStatus('Playing · live');
+        self._setStatus('Toistetaan · suorana');
         self._applyVolume();
       }).catch(function () {
-        self._setStatus('Playback blocked — tap Play', true);
+        self._setStatus('Toisto estetty — paina Toista', true);
       });
     });
 
     this.hls.on(window.Hls.Events.ERROR, function (_evt, data) {
       if (data.fatal) {
-        self._setStatus('Stream error — retrying…', true);
+        self._setStatus('Lähetysvirhe — yritetään uudelleen…', true);
         self._playing = false;
         self._updatePlayBtn();
       }
@@ -439,12 +490,12 @@
     this._audio.load();
     this._playing = false;
     this._updatePlayBtn();
-    this._setStatus(this._live ? 'Paused · stream is live' : 'Off air · waiting for stream');
+    this._setStatus(this._live ? 'Tauolla · lähetys käynnissä' : 'Poissa · odotetaan lähetystä');
   };
 
   TubeRadio.prototype._updatePlayBtn = function () {
     this._playBtn.innerHTML = this._playing ? iconPause() : iconPlay();
-    this._playBtn.setAttribute('aria-label', this._playing ? 'Pause' : 'Play');
+    this._playBtn.setAttribute('aria-label', this._playing ? 'Tauko' : 'Toista');
   };
 
   // ---------------------------------------------------------------------------
@@ -486,11 +537,12 @@
     if (!recordings || recordings.length === 0) {
       var empty = document.createElement('div');
       empty.className = 'tr-archive-empty';
-      empty.textContent = 'No recordings yet.';
+      empty.textContent = 'Ei tallennuksia.';
       list.appendChild(empty);
       return;
     }
 
+    var self = this;
     recordings.forEach(function (rec) {
       var li = document.createElement('li');
       li.className = 'tr-archive-item';
@@ -506,6 +558,11 @@
       dlLink.href = rec.url;
       dlLink.download = rec.filename;
       dlLink.textContent = '↓ MP3';
+      (function (filename) {
+        dlLink.addEventListener('click', function () {
+          self._reportEvent({ type: 'archive-play', filename: filename });
+        });
+      }(rec.filename));
       li.appendChild(dlLink);
 
       list.appendChild(li);
@@ -535,6 +592,7 @@
         streamUrl:   el.getAttribute('data-stream-url')  || DEFAULTS.streamUrl,
         statusUrl:   el.getAttribute('data-status-url')  || DEFAULTS.statusUrl,
         archiveUrl:  el.getAttribute('data-archive-url') || DEFAULTS.archiveUrl,
+        statsUrl:    el.getAttribute('data-stats-url')   || DEFAULTS.statsUrl,
         title:       el.getAttribute('data-title')        || DEFAULTS.title,
         pollInterval: Number(el.getAttribute('data-poll-interval')) || DEFAULTS.pollInterval,
       });

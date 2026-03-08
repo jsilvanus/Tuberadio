@@ -8,6 +8,9 @@ services:
     ports:
       - "${RTMP_PORT:-1935}:1935"   # RTMP ingest  (push stream here from your fan-out project)
       - "${HTTP_PORT:-8080}:8080"   # HTTP         (HLS stream + archive browser)
+    environment:
+      STATS_API_URL: "http://api:3000"
+      STATS_SESSION_SECRET: "${STATS_SESSION_SECRET:-}"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./scripts:/opt/tuberadio/scripts:ro
@@ -35,13 +38,24 @@ services:
       ARCHIVE_URL_PREFIX: "${ARCHIVE_URL_PREFIX:-/archive}"
       ARCHIVE_AGE_DAYS: "${ARCHIVE_AGE_DAYS:-0}"
       HIDDEN_ARCHIVE_DELETE_DAYS: "${HIDDEN_ARCHIVE_DELETE_DAYS:-0}"
+      STATS_FILE: /var/www/radio/stats/stats.json
+      STATS_SESSION_DAYS: "${STATS_SESSION_DAYS:-90}"
+      STATS_SESSION_SECRET: "${STATS_SESSION_SECRET:-}"
+      EMAIL_PROVIDER: "${EMAIL_PROVIDER:-}"
+      EMAIL_TO: "${EMAIL_TO:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      SENDGRID_API_KEY: "${SENDGRID_API_KEY:-}"
+      MAILGUN_API_KEY: "${MAILGUN_API_KEY:-}"
+      MAILGUN_DOMAIN: "${MAILGUN_DOMAIN:-}"
     volumes:
       - radio-hls:/var/www/radio/hls:ro
       - radio-archive:/var/www/radio/archive
       - radio-hidden-archive:/var/www/radio/hidden_archive
+      - radio-stats:/var/www/radio/stats
 
 volumes:
   radio-hls:
   radio-archive:
   radio-hidden-archive:
   radio-logs:
+  radio-stats:
