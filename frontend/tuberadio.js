@@ -105,11 +105,30 @@
     'font-weight:600;flex-shrink:0;}',
     '.tr-archive-dl:hover{text-decoration:underline;}',
     '.tr-archive-empty{color:#555;font-size:.82rem;padding:6px 4px;}',
+
+    '.tr-info{position:relative;display:flex;align-items:center;margin-left:8px;flex-shrink:0;}',
+    '.tr-info-btn{background:none;border:none;padding:0;cursor:pointer;',
+    'color:#555;display:flex;align-items:center;transition:color .2s;}',
+    '.tr-info-btn:hover{color:#aaa;}',
+    '.tr-tooltip{position:absolute;top:calc(100% + 8px);right:0;width:230px;',
+    'background:#2a2a3e;color:#ccc;font-size:.74rem;line-height:1.5;',
+    'padding:10px 12px;border-radius:8px;border:1px solid #3a3a54;',
+    'box-shadow:0 4px 16px rgba(0,0,0,.4);',
+    'opacity:0;pointer-events:none;transition:opacity .15s;z-index:10;}',
+    '.tr-tooltip::before{content:"";position:absolute;bottom:100%;right:8px;',
+    'border:5px solid transparent;border-bottom-color:#3a3a54;}',
+    '.tr-info:hover .tr-tooltip,.tr-info-btn:focus+.tr-tooltip{opacity:1;pointer-events:auto;}',
   ].join('');
 
   // ---------------------------------------------------------------------------
   // SVG icons (inline, no external assets)
   // ---------------------------------------------------------------------------
+  function iconInfo() {
+    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">' +
+      '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z' +
+      'M13 17h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>';
+  }
+
   function iconPlay() {
     return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">' +
       '<path d="M8 5v14l11-7z"/></svg>';
@@ -219,9 +238,27 @@
     this._badge.className = 'tr-badge';
     this._badge.textContent = 'poissa';
 
+    var infoWrap = document.createElement('div');
+    infoWrap.className = 'tr-info';
+
+    var infoBtn = document.createElement('button');
+    infoBtn.className = 'tr-info-btn';
+    infoBtn.setAttribute('aria-label', 'Tietoa tietojenkeruusta');
+    infoBtn.innerHTML = iconInfo();
+
+    var tooltip = document.createElement('div');
+    tooltip.className = 'tr-tooltip';
+    tooltip.textContent = 'Keräämme nimettömiä käyttötietoja: kuuntelunapin painallukset, ' +
+      'arkistolatauksien lukumäärä sekä lähetysajankohdat ja -kestot. ' +
+      'Emme tallenna henkilötietoja.';
+
+    infoWrap.appendChild(infoBtn);
+    infoWrap.appendChild(tooltip);
+
     header.appendChild(this._dot);
     header.appendChild(titleEl);
     header.appendChild(this._badge);
+    header.appendChild(infoWrap);
     root.appendChild(header);
 
     // --- Controls row ---
