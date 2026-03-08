@@ -43,6 +43,9 @@ HLS_SEGMENTS="${HLS_DIR}/seg%05d.ts"
 
 LOG_FILE="${LOG_DIR}/ffmpeg_${ARCHIVE_TIMESTAMP}.log"
 
+STATS_API_URL="${STATS_API_URL:-http://127.0.0.1:3000}"
+STATS_SESSION_SECRET="${STATS_SESSION_SECRET:-}"
+
 # Create directories
 mkdir -p "$HLS_DIR" "$ARCHIVE_DIR" "$LOG_DIR"
 
@@ -78,6 +81,23 @@ echo "  Archive    : $ARCHIVE_FILE" >> "$LOG_FILE"
 #    -metadata title=...    embed stream name in the tag
 #    -metadata date=...     embed start timestamp in the tag
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Notify the API server of the stream session start (fire-and-forget)
+# ---------------------------------------------------------------------------
+if command -v curl >/dev/null 2>&1; then
+  _AUTH_HEADER=""
+  if [ -n "$STATS_SESSION_SECRET" ]; then
+    _AUTH_HEADER="Authorization: Bearer ${STATS_SESSION_SECRET}"
+  fi
+  curl -sf \
+    -X POST \
+    -H "Content-Type: application/json" \
+    ${_AUTH_HEADER:+-H "$_AUTH_HEADER"} \
+    -d "{\"event\":\"start\",\"streamName\":\"${STREAM_NAME}\",\"timestamp\":\"$(date -Iseconds)\"}" \
+    "${STATS_API_URL}/api/stats/session" \
+    >> "$LOG_FILE" 2>&1 || true
+fi
+
 exec ffmpeg \
     -loglevel warning \
     -i "$RTMP_INPUT" \

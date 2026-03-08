@@ -36,6 +36,7 @@
     streamUrl:  '/hls/stream.m3u8',
     statusUrl:  '/api/status',
     archiveUrl: '/api/archive',
+    statsUrl:   '/api/stats/event',
     title:      'Tuberadio',
     /** How often to poll the status endpoint (ms) */
     pollInterval: 10000,
@@ -356,7 +357,20 @@
     if (this._playing) {
       this._stopPlayback();
     } else {
+      this._reportEvent({ type: 'live-play' });
       this._startPlayback();
+    }
+  };
+
+  TubeRadio.prototype._reportEvent = function (payload) {
+    if (!this.opts.statsUrl) return;
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', this.opts.statsUrl);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(JSON.stringify(payload));
+    } catch (e) {
+      // Silently ignore — stats are optional
     }
   };
 
@@ -491,6 +505,7 @@
       return;
     }
 
+    var self = this;
     recordings.forEach(function (rec) {
       var li = document.createElement('li');
       li.className = 'tr-archive-item';
@@ -506,6 +521,11 @@
       dlLink.href = rec.url;
       dlLink.download = rec.filename;
       dlLink.textContent = '↓ MP3';
+      (function (filename) {
+        dlLink.addEventListener('click', function () {
+          self._reportEvent({ type: 'archive-play', filename: filename });
+        });
+      }(rec.filename));
       li.appendChild(dlLink);
 
       list.appendChild(li);
@@ -535,6 +555,7 @@
         streamUrl:   el.getAttribute('data-stream-url')  || DEFAULTS.streamUrl,
         statusUrl:   el.getAttribute('data-status-url')  || DEFAULTS.statusUrl,
         archiveUrl:  el.getAttribute('data-archive-url') || DEFAULTS.archiveUrl,
+        statsUrl:    el.getAttribute('data-stats-url')   || DEFAULTS.statsUrl,
         title:       el.getAttribute('data-title')        || DEFAULTS.title,
         pollInterval: Number(el.getAttribute('data-poll-interval')) || DEFAULTS.pollInterval,
       });
