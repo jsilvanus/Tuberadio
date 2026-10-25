@@ -14,7 +14,7 @@
  * Usage (programmatic):
  *   const player = new TubeRadio({
  *     container: document.getElementById('player'),
- *     streamUrl: '/api/hls/delayed.m3u8',
+ *     streamUrl: '/hls/stream.m3u8',
  *     statusUrl: '/api/status',
  *     archiveUrl: '/api/archive',
  *     title: 'My Radio',
@@ -33,7 +33,7 @@
   // Default options
   // ---------------------------------------------------------------------------
   var DEFAULTS = {
-    streamUrl:  '/api/hls/delayed.m3u8',
+    streamUrl:  '/hls/stream.m3u8',
     statusUrl:  '/api/status',
     archiveUrl: '/api/archive',
     statsUrl:   '/api/stats/event',
