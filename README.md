@@ -157,7 +157,7 @@ Replace `<stream-key>` with any alphanumeric key, e.g. `stream`.
 The moment nginx receives the stream it calls `on-publish.sh`, which starts
 FFmpeg. Within a few seconds:
 
-- **Live HLS (delayed)**: `http://<your-host>:8080/api/hls/delayed.m3u8`
+- **Live HLS**: `http://<your-host>:8080/hls/stream.m3u8`
 - **Archive browser**: `http://<your-host>:8080/archive/`
 - **Status API**: `http://<your-host>:8080/api/status`
 
@@ -169,7 +169,7 @@ Copy `frontend/tuberadio.js` to your web server (or CDN) and add to any HTML pag
 <div
   data-tuberadio
   data-title="My Radio"
-  data-stream-url="http://<your-host>:8080/api/hls/delayed.m3u8"
+  data-stream-url="http://<your-host>:8080/hls/stream.m3u8"
   data-status-url="http://<your-host>:8080/api/status"
   data-archive-url="http://<your-host>:8080/api/archive"
 ></div>
@@ -453,12 +453,6 @@ Copy `.env.example` to `.env` and override only what you need.
 | `STALE_MS` | `30000` | Milliseconds after the last manifest update before the stream is considered off-air |
 | `HLS_STREAM_URL` | `/hls/stream.m3u8` | Public URL returned in `GET /api/status` — set to your full public URL when behind a reverse proxy |
 | `ARCHIVE_URL_PREFIX` | `/archive` | URL prefix for archive download links in `GET /api/archive` — set to your full public URL when behind a reverse proxy |
-| `RELAY_API_TOKEN` | *(unset)* | Bearer token for the control API (`/api/v1/*`). Unset means those routes answer 503 (fail closed). Generate with `openssl rand -hex 32` |
-| `DELAY_SECONDS` | `0` | Listener delay for audio and captions. Changeable at runtime with `PUT /api/v1/delay` |
-| `DELAY_MAX_SECONDS` | `60` | Upper bound for the delay (see `HLS_LIST_SIZE` above) |
-| `DELAYED_STREAM_URL` | `/api/hls/delayed.m3u8` | Playlist URL reported as `streamUrl` in `GET /api/status` |
-| `HLS_SEGMENT_PREFIX` | `/hls/` | URL prefix of segment files named in the delayed playlist (nginx serves `/hls/`) |
-| `CAPTION_RETENTION_SECONDS` | `3600` | How long captions stay in memory |
 
 ### FFmpeg / on-publish.sh
 
@@ -469,63 +463,28 @@ Copy `.env.example` to `.env` and override only what you need.
 | `LOG_DIR` | `/var/log/tuberadio` | FFmpeg per-session log directory |
 | `AUDIO_BITRATE` | `128k` | Bitrate for both the HLS AAC and archive MP3 outputs |
 | `HLS_TIME` | `4` | HLS segment duration in seconds |
-| `HLS_LIST_SIZE` | `10` | Minimum number of segments kept in the rolling playlist. Raised automatically to cover `DELAY_MAX_SECONDS` |
-| `DELAY_MAX_SECONDS` | `60` | Largest listener delay the relay accepts; sizes the live playlist. Must match the API's value |
+| `HLS_LIST_SIZE` | `10` | Number of segments kept in the rolling playlist |
 
 ---
 
 ## API reference
 
 The API is served at `/api/` (port 8080, proxied by nginx) and is also directly available on port 3000.
-A machine-readable description is at `GET /api/openapi.json` (OpenAPI 3.1, source: `server/openapi.json`).
-Public routes serve listeners and the widget. Routes under `/api/v1/` are control routes and need
-`Authorization: Bearer <RELAY_API_TOKEN>`.
-
-### Listener delay and sync
-
-The relay delays the audio for listeners by `DELAY_SECONDS`. Captions use the same clock, so a caption
-is released to listeners at `startedAt + delay`, when the delayed audio plays that moment. The widget
-plays `/api/hls/delayed.m3u8` by default. ffmpeg writes `#EXT-X-PROGRAM-DATE-TIME` for every segment,
-and the delayed playlist lists only segments that ended at least `delay` seconds ago. Accuracy is one
-segment (`HLS_TIME`, 4 s) at the segment boundary, plus the ingest latency of the RTMP push. Sync with
-captions is therefore good to about a second, not sample-accurate.
 
 ### `GET /api/status`
+
+Returns whether a stream is currently live.
 
 ```json
 {
   "live": true,
-  "streamUrl": "/api/hls/delayed.m3u8",
-  "liveStreamUrl": "/hls/stream.m3u8",
-  "delaySeconds": 0,
+  "streamUrl": "/hls/stream.m3u8",
   "lastUpdated": "2024-06-01T14:32:00.000Z"
 }
 ```
 
-`live` is `true` when the HLS manifest (`stream.m3u8`) was modified less than `STALE_MS` milliseconds ago.
-`streamUrl` is the playlist listeners should load (delayed). `liveStreamUrl` is the undelayed playlist.
-
-### `GET /api/hls/delayed.m3u8`
-
-The live audio playlist, delayed by `delaySeconds`. `404` when the stream is not live, `503` when the
-live playlist has no timing information.
-
-### `GET /api/captions?lang=fi&from=<ms>&limit=200`
-
-Captions that are due for listeners now, oldest first. Poll with the previous response's `next` as `from`.
-Without `from` the last 30 seconds of due captions are returned. Translations are ordinary captions with
-another `lang`.
-
-```json
-{
-  "serverTime": 1717252320000,
-  "delaySeconds": 0,
-  "next": 1717252318501,
-  "captions": [
-    { "id": 17, "lang": "fi", "text": "Hyvää huomenta", "startedAt": 1717252318000, "endedAt": 1717252319500 }
-  ]
-}
-```
+`live` is `true` when the HLS manifest (`stream.m3u8`) was modified less than `STALE_MS` milliseconds ago.  
+`streamUrl` is the value of `HLS_STREAM_URL`.
 
 ### `GET /api/archive`
 
@@ -547,36 +506,7 @@ Returns a list of archived recordings, newest first.
 
 `url` uses `ARCHIVE_URL_PREFIX` as its base.
 
-### `GET /api/stats` and `POST /api/stats/event`
-
-Anonymous aggregate statistics, and the play events the widget sends. Both are public.
-
-### Control API (`/api/v1`, Bearer token)
-
-| Method and path | Purpose |
-|---|---|
-| `POST /api/v1/captions` | Push up to 100 caption segments: `{ "segments": [{ "lang", "text", "startedAt", "endedAt"? }] }`. `startedAt` is epoch milliseconds on the sender's clock (NTP-synced with the relay). Answers `202 { "accepted": n }`. One bad segment rejects the whole request with a `400` that names the field. |
-| `GET /api/v1/delay` | `{ "delaySeconds", "maxSeconds" }` |
-| `PUT /api/v1/delay` | `{ "delaySeconds": 20 }`, an integer from 0 to `DELAY_MAX_SECONDS`. Applies at once to audio and captions. Not persisted: a restart returns to `DELAY_SECONDS`. |
-| `POST /api/v1/stats/session` | `{ "event": "start" \| "end", "streamName" }`. Sent by `on-publish.sh` and `on-publish-done.sh`. |
-
-Responses: `401` for a missing or wrong token, `503` when `RELAY_API_TOKEN` is not set. The token is compared in
-constant time and is never accepted in the URL.
-
-**Rate limits:** public routes 60 requests per minute per IP; `/api/v1` 600 per minute per IP.
-
-### Remote CLI
-
-`cli/` is a zero-dependency command-line client generated from `server/openapi.json`:
-
-```bash
-cd cli && npm run generate            # regenerate after changing openapi.json
-export TUBERADIO_URL=https://radio.example.com TUBERADIO_TOKEN=...
-node src/cli.js ops                   # list operations
-node src/cli.js getStatus
-node src/cli.js setDelay --body '{"delaySeconds":20}'
-node src/cli.js publishCaptions --body-file captions.json
-```
+**Rate limit:** 60 requests per minute per IP.
 
 ---
 
