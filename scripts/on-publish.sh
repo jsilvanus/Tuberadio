@@ -30,6 +30,15 @@ LOG_DIR="${LOG_DIR:-/var/log/tuberadio}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
 HLS_TIME="${HLS_TIME:-4}"
 HLS_LIST_SIZE="${HLS_LIST_SIZE:-10}"
+DELAY_MAX_SECONDS="${DELAY_MAX_SECONDS:-60}"
+
+# The relay serves listeners a playlist delayed by up to DELAY_MAX_SECONDS, so
+# the live playlist must still hold those segments: size it to cover the delay
+# plus a few segments for the delayed window.
+MIN_LIST_SIZE=$(( (DELAY_MAX_SECONDS + HLS_TIME - 1) / HLS_TIME + 6 ))
+if [ "$HLS_LIST_SIZE" -lt "$MIN_LIST_SIZE" ]; then
+  HLS_LIST_SIZE="$MIN_LIST_SIZE"
+fi
 
 RTMP_INPUT="rtmp://127.0.0.1/live/${STREAM_NAME}"
 
@@ -44,7 +53,7 @@ HLS_SEGMENTS="${HLS_DIR}/seg%05d.ts"
 LOG_FILE="${LOG_DIR}/ffmpeg_${ARCHIVE_TIMESTAMP}.log"
 
 STATS_API_URL="${STATS_API_URL:-http://127.0.0.1:3000}"
-STATS_SESSION_SECRET="${STATS_SESSION_SECRET:-}"
+RELAY_API_TOKEN="${RELAY_API_TOKEN:-}"
 
 # Create directories
 mkdir -p "$HLS_DIR" "$ARCHIVE_DIR" "$LOG_DIR"
@@ -86,15 +95,15 @@ echo "  Archive    : $ARCHIVE_FILE" >> "$LOG_FILE"
 # ---------------------------------------------------------------------------
 if command -v curl >/dev/null 2>&1; then
   _AUTH_HEADER=""
-  if [ -n "$STATS_SESSION_SECRET" ]; then
-    _AUTH_HEADER="Authorization: Bearer ${STATS_SESSION_SECRET}"
+  if [ -n "$RELAY_API_TOKEN" ]; then
+    _AUTH_HEADER="Authorization: Bearer ${RELAY_API_TOKEN}"
   fi
   curl -sf \
     -X POST \
     -H "Content-Type: application/json" \
     ${_AUTH_HEADER:+-H "$_AUTH_HEADER"} \
     -d "{\"event\":\"start\",\"streamName\":\"${STREAM_NAME}\",\"timestamp\":\"$(date -Iseconds)\"}" \
-    "${STATS_API_URL}/api/stats/session" \
+    "${STATS_API_URL}/api/v1/stats/session" \
     >> "$LOG_FILE" 2>&1 || true
 fi
 
@@ -108,7 +117,7 @@ exec ffmpeg \
     -f hls \
     -hls_time "$HLS_TIME" \
     -hls_list_size "$HLS_LIST_SIZE" \
-    -hls_flags delete_segments+append_list \
+    -hls_flags delete_segments+append_list+program_date_time \
     -hls_segment_filename "$HLS_SEGMENTS" \
     "$HLS_MANIFEST" \
     \
